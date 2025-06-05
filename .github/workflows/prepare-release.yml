@@ -1,0 +1,80 @@
+name: Prepare release
+
+on:
+  push:
+    branches:
+      - developer
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  prepare_release:
+    if: startsWith(github.event.head_commit.message, 'release')
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Config Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Extract Version and Create Release Branch
+        run: |
+          COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
+          VERSION=$(echo "$COMMIT_MESSAGE" | grep -oP '(?<=release: v)\d+\.\d+\.\d+')
+          TAG="v$VERSION"
+          RELEASE_BRANCH="release-$TAG"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "RELEASE_BRANCH=$RELEASE_BRANCH" >> $GITHUB_ENV
+
+      - name: Generate git tag
+        run: |
+          git tag ${{ env.TAG }} -m "${{ env.TAG }}"
+          git push -u origin ${{ env.TAG }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Bump package.json version
+        run: npm version ${{ env.VERSION }} --no-git-tag-version
+
+      - name: Generate Changelog
+        id: changelog
+        uses: requarks/changelog-action@v1
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          tag: ${{ env.TAG }}
+
+      - name: Commit and Push Release Branch
+        run: |
+          git checkout -b ${{ env.RELEASE_BRANCH }}
+          git add package.json CHANGELOG.md
+          git commit -m "chore(release): prepare release ${{ env.TAG }}"
+          git push origin HEAD:${{ env.RELEASE_BRANCH }}
+
+      - name: Create Pull Request for main branch
+        run: gh pr create -B main -H ${{ env.RELEASE_BRANCH}} --title 'Release ${{ env.TAG }} -> main' --body 'This PR prepares the release for version ${{ env.VERSION }}'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name: Create Pull Request for developer branch
+        run: gh pr create -B developer -H ${{ env.RELEASE_BRANCH}} --title 'Release ${{ env.TAG }} -> developer' --body 'This PR update the developer branch with version ${{ env.VERSION }} updates'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.TAG }}
+          body: ${{ steps.changelog.outputs.changes }}
+          token: ${{ secrets.GH_TOKEN }}
